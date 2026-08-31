@@ -33,8 +33,7 @@ jobs:
           node-version: 24
       - run: npm install
       - run: npx prisma validate
-      - name: Preview initial migration
-        run: npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script
-      - run: npx prisma db push
+      - run: npx prisma migrate deploy
+      - run: npx prisma migrate status
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run check
