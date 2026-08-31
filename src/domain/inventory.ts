@@ -9,7 +9,7 @@ export type InventoryCommand =
   | { type: "OPENED" }
   | { type: "FINISHED" }
   | { type: "RETURNED" | "DISCARDED"; quantity: number; bucket: "BACKUP" | "IN_USE" }
-  | { type: "ADJUSTMENT"; backupDelta: number; inUseDelta: number };
+  | { type: "ADJUSTMENT"; backupDelta: number; inUseDelta: number; openedAt?: Date | null };
 
 export type PlannedInventoryEvent = {
   backupDelta: number;
@@ -98,15 +98,18 @@ export function planInventoryEvent(
       }
       break;
 
-    case "ADJUSTMENT":
+    case "ADJUSTMENT": {
       assertInteger(command.backupDelta, "backupDelta");
       assertInteger(command.inUseDelta, "inUseDelta");
-      if (command.backupDelta === 0 && command.inUseDelta === 0) {
-        throw new Error("Adjustment must change at least one inventory bucket");
+      const hasOpenedAtOverride = Object.prototype.hasOwnProperty.call(command, "openedAt");
+      if (command.backupDelta === 0 && command.inUseDelta === 0 && !hasOpenedAtOverride) {
+        throw new Error("Adjustment must change inventory state");
       }
       backupDelta = command.backupDelta;
       inUseDelta = command.inUseDelta;
+      if (hasOpenedAtOverride) openedAt = command.openedAt ?? null;
       break;
+    }
   }
 
   const next: InventoryState = {
