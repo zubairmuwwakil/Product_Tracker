@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: product_tracker
+      POSTGRES_USER: product_tracker
+      POSTGRES_PASSWORD: product_tracker
+    ports:
+      - "5434:5432"
+    volumes:
+      - product_tracker_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U product_tracker -d product_tracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  product_tracker_pg:

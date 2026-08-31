@@ -1,0 +1,150 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum InventoryEventType {
+  BASELINE
+  PURCHASED
+  OPENED
+  FINISHED
+  RETURNED
+  DISCARDED
+  ADJUSTMENT
+}
+
+enum InventoryEventSource {
+  API
+  NOTION
+  IMPORT
+  SYSTEM
+}
+
+enum OutboxType {
+  NOTION_PRODUCT_STATE
+  NOTION_INVENTORY_EVENT
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+model InventoryNeed {
+  id                 String           @id @default(cuid())
+  key                String           @unique
+  name               String
+  aisle              String?
+  active             Boolean          @default(true)
+  backupTarget       Int              @default(1)
+  reorderPoint       Int              @default(1)
+  defaultRetailer    String?
+  notes              String?
+  notionPageId       String?          @unique
+  notionLastEditedAt DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  products           Product[]
+  events             InventoryEvent[]
+
+  @@index([active])
+}
+
+model Product {
+  id                  String            @id @default(cuid())
+  key                 String            @unique
+  needId              String
+  name                String
+  brand               String?
+  careArea            String?
+  active              Boolean           @default(true)
+  paoMonths           Int?
+  price               Decimal?          @db.Decimal(12, 2)
+  productUrl          String?
+  repurchasePolicy    String?
+  retailerOverride    String?
+  notes               String?
+  needsIdentification Boolean           @default(false)
+  notionPageId        String?           @unique
+  notionLastEditedAt  DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  need                InventoryNeed     @relation(fields: [needId], references: [id], onDelete: Cascade)
+  balance             InventoryBalance?
+  events              InventoryEvent[]
+
+  @@index([needId, active])
+}
+
+model InventoryBalance {
+  productId   String   @id
+  backupUnits Int      @default(0)
+  inUseUnits  Int      @default(0)
+  openedAt    DateTime?
+  version     Int      @default(0)
+  updatedAt   DateTime @updatedAt
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model InventoryEvent {
+  id                String               @id @default(cuid())
+  productId         String
+  needId            String
+  type              InventoryEventType
+  source            InventoryEventSource
+  backupDelta       Int                  @default(0)
+  inUseDelta        Int                  @default(0)
+  quantityDelta     Int                  @default(0)
+  occurredAt        DateTime
+  recordedAt        DateTime             @default(now())
+  idempotencyKey    String               @unique
+  externalEventId   String?
+  note              String?
+  notionEventPageId String?              @unique
+  product           Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
+  need              InventoryNeed        @relation(fields: [needId], references: [id], onDelete: Cascade)
+
+  @@index([productId, occurredAt])
+  @@index([needId, occurredAt])
+}
+
+model OutboxEvent {
+  id          String       @id @default(cuid())
+  type        OutboxType
+  status      OutboxStatus @default(PENDING)
+  aggregateId String
+  dedupeKey   String       @unique
+  payload     Json
+  attempts    Int          @default(0)
+  availableAt DateTime     @default(now())
+  lockedAt    DateTime?
+  processedAt DateTime?
+  lastError   String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([status, availableAt])
+}
+
+model WebhookReceipt {
+  id              String   @id @default(cuid())
+  provider        String
+  externalEventId String
+  eventType       String
+  entityId        String?
+  receivedAt      DateTime @default(now())
+  processedAt     DateTime?
+  attempts        Int      @default(0)
+  availableAt     DateTime @default(now())
+  lockedAt        DateTime?
+  lastError       String?
+  payload         Json
+
+  @@unique([provider, externalEventId])
+  @@index([provider, processedAt, availableAt])
+}
