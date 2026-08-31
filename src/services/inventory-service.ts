@@ -105,8 +105,8 @@ export async function recordInventoryEvent(input: RecordInventoryEventInput): Pr
         quantityDelta: planned.quantityDelta,
         occurredAt,
         idempotencyKey: input.idempotencyKey,
-        externalEventId: input.externalEventId,
-        note: input.note,
+        ...(input.externalEventId ? { externalEventId: input.externalEventId } : {}),
+        ...(input.note ? { note: input.note } : {}),
       },
     });
 
@@ -154,12 +154,13 @@ export async function createBaseline(input: {
       throw new Error("Baseline inUseUnits must be 0 or 1");
     }
 
+    const openedAt = input.inUseUnits === 1 ? input.openedAt ?? new Date() : null;
     await tx.inventoryBalance.create({
       data: {
         productId: product.id,
         backupUnits: input.backupUnits,
         inUseUnits: input.inUseUnits,
-        openedAt: input.inUseUnits === 1 ? input.openedAt ?? new Date() : null,
+        openedAt,
       },
     });
 
@@ -172,7 +173,7 @@ export async function createBaseline(input: {
         backupDelta: input.backupUnits,
         inUseDelta: input.inUseUnits,
         quantityDelta: input.backupUnits + input.inUseUnits,
-        occurredAt: new Date(),
+        occurredAt: openedAt ?? new Date(),
         idempotencyKey: `baseline:${product.key}`,
         note: "Initial state imported from Notion",
       },
@@ -200,23 +201,25 @@ export async function reconcileNotionBalance(input: {
 
   const backupDelta = input.backupUnits - product.balance.backupUnits;
   const inUseDelta = input.inUseUnits - product.balance.inUseUnits;
-  if (backupDelta === 0 && inUseDelta === 0) return;
+  const currentOpened = product.balance.openedAt?.getTime() ?? null;
+  const desiredOpened = input.inUseUnits === 1 ? input.openedAt?.getTime() ?? null : null;
+  const openedAtChanged = currentOpened !== desiredOpened;
+
+  if (backupDelta === 0 && inUseDelta === 0 && !openedAtChanged) return;
 
   await recordInventoryEvent({
     productKey: input.productKey,
-    command: { type: "ADJUSTMENT", backupDelta, inUseDelta },
+    command: {
+      type: "ADJUSTMENT",
+      backupDelta,
+      inUseDelta,
+      ...(openedAtChanged ? { openedAt: input.openedAt } : {}),
+    },
     source: InventoryEventSource.NOTION,
     idempotencyKey: `notion-state:${product.notionPageId ?? product.key}:${input.lastEditedAt.toISOString()}`,
     occurredAt: input.lastEditedAt,
     note: "Inventory state edited in Notion",
   });
-
-  if (input.inUseUnits === 1 && input.openedAt) {
-    await prisma.inventoryBalance.update({
-      where: { productId: product.id },
-      data: { openedAt: input.openedAt },
-    });
-  }
 }
 
 export async function listNeedHealth(): Promise<Array<Record<string, unknown>>> {
