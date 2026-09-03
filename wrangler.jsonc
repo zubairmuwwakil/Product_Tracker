@@ -40,7 +40,7 @@
   "vars": {
     "NODE_ENV": "production",
     "OUTBOX_BATCH_SIZE": "20",
-    "DATABASE_POOL_MAX": "2",
+    "DATABASE_POOL_MAX": "5",
     "DATABASE_IDLE_TIMEOUT_MS": "10000",
     "DATABASE_CONNECTION_TIMEOUT_MS": "5000"
   }
