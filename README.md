@@ -1,41 +1,40 @@
 # Product Tracker
 
-Postgres-backed personal inventory service with Neon as durable state, Cloudflare as the production runtime, and Notion as a transitional human control/projection surface.
+Postgres-backed personal inventory service with Neon as canonical durable state, Cloudflare Workers/Queues as the production runtime, and Notion as a projection/rollback UI.
 
 ## Architecture
 
 ```text
-Notion / ChatGPT / clients
-          |
-          v
- Cloudflare Worker
- API + webhook ingress
-          |
-          v
-      Hyperdrive
-          |
-          v
-         Neon
+ChatGPT / clients
+       |
+       v
+Cloudflare Worker
+ authenticated API
+       |
+       v
+   Hyperdrive
+       |
+       v
+      Neon
  canonical inventory + events
  outbox + webhook receipts
-          |
-          v
- Cloudflare Queue
- async projection / retries
-          |
-          v
- Notion projection / future effects
+ dead-letter receipts
+       |
+       v
+Cloudflare Queue
+ retries + reconciliation
+       |
+       v
+Notion projection
 ```
 
-Neon owns durable inventory truth. Cloudflare owns runtime execution, queue delivery, retry infrastructure, and pooled database connectivity through Hyperdrive.
+Neon owns inventory truth. Cloudflare owns runtime execution, queue delivery, retry/reconciliation infrastructure, and database connectivity through Hyperdrive. Notion is not an authoritative write source in production.
 
 ## Production state
 
-### Mirror/data layer — verified
-
 The production database is `product_tracker` inside the existing LLM4LIFE Neon project.
 
-Verified snapshot:
+Verified baseline:
 
 - 25 active inventory Needs;
 - 26 active Products;
@@ -43,11 +42,9 @@ Verified snapshot:
 - 26 import baseline events;
 - zero orphan Product/balance relationships;
 - zero balance-vs-baseline mismatches;
-- derived state: 5 `BUY_NOW`, 1 `RESTOCK`, 19 `STOCKED`.
+- derived state at migration baseline: 5 `BUY_NOW`, 1 `RESTOCK`, 19 `STOCKED`.
 
 The 25/26 relationship is expected because one functional Need has two active SKUs.
-
-### Cloudflare Phase 2 — production verified
 
 Live Worker:
 
@@ -55,113 +52,101 @@ Live Worker:
 llm4life-product-tracker
 ```
 
-Verified production behavior:
+## Canonical ownership — cut over 2026-09-03
 
-- `GET /health` succeeds;
-- authenticated `GET /v1/needs` returns the 25-Need Neon snapshot;
-- signed Notion webhook requests are accepted;
-- webhook receipts are durably persisted in Neon;
-- Cloudflare Queue processes webhook receipts on the first attempt without errors;
-- the protected `/internal/relay` reports zero pending webhook/outbox work when clean;
-- a reversible Notion property edit and its restoration were both received and processed after Hyperdrive deployment;
-- production Prisma baseline is recorded;
-- Cloudflare Hyperdrive is bound for Neon connectivity;
-- Hyperdrive uses the dedicated least-privilege Neon role `product_tracker_runtime`, not the database-owner credential.
+**Product Tracker/Neon is the canonical personal-care inventory owner.**
 
-## Ownership status
+Production runs with:
 
-Product Tracker/Neon is the target canonical personal-care inventory owner.
+```text
+NOTION_INBOUND_SYNC_ENABLED=false
+```
 
-Notion is still a **transitional human control/projection surface** until the remaining mutation/retry gates below are deliberately verified. Do not silently dual-write around the domain service.
+Signed Notion webhooks remain authenticated and acknowledged, but they do not mutate Neon while the switch is disabled. This preserves a reversible rollback path without allowing silent dual-write ownership.
+
+All human/agent inventory mutations should go through Product Tracker's authenticated event API. Notion is projection/reference/rollback UI only.
+
+## Reliability status — Phase 2 complete
+
+Verified in production/staging before canonical cutover:
+
+- hosted `/health` and authenticated `/v1/needs`;
+- duplicate/retried API mutations produce one canonical InventoryEvent;
+- signed Notion webhook authentication, deduplication, Queue delivery and processing;
+- outbound Neon → Notion projection;
+- durable application retries with exponential backoff and terminal `FAILED` after attempt 8;
+- reconciliation recovery of deliberately pending durable work;
+- Cloudflare platform retries and dead-letter routing after queue-handler crashes;
+- Hyperdrive + invocation-scoped Prisma/pg lifecycle for Workers;
+- cron reconciliation operates without the earlier cross-invocation database I/O failure.
+
+One narrow external exactly-once caveat remains: if Notion page creation succeeds but persistence of `notionEventPageId` fails immediately afterward, a retry could create a duplicate page. The planned hardening is a stable Product Tracker Event ID projected into Notion and queried before create.
+
+## Durable observability
+
+Production reliability state is durable in Neon:
+
+- `OutboxEvent.status=FAILED` records application-side terminal failures;
+- overdue `PENDING` outbox/webhook rows are detected by scheduled reconciliation;
+- the production Worker also consumes `llm4life-product-tracker-events-dlq`;
+- DLQ messages are persisted in `DeadLetterEvent` using Cloudflare's unique queue message ID;
+- `GET /internal/status` exposes authenticated counts for failed outbox work, overdue work, overdue webhooks and unresolved dead letters;
+- the 5-minute scheduled handler emits an error log whenever attention is required.
 
 ## Design rules
 
-- **PostgreSQL owns durable inventory state after final write cutover.**
+- **PostgreSQL owns durable inventory state.**
 - **Inventory changes are events.** API handlers do not directly mutate balances.
-- **Notion becomes a projection/control surface.** Human edits are translated into audited events.
 - **Stable keys beat titles.** `need.personal-care.*` and `product.*` keys are canonical identifiers.
 - **Derived state stays derived.** On-hand, urgency and buy quantity come from facts and policy.
 - **Every external write is idempotent.** API callers provide an `Idempotency-Key`.
 - **External side effects are durable and retry-safe.** A committed inventory mutation never depends on Notion being online.
-- **Prefer event-driven processing to permanent polling.** Reconciliation only recovers durable pending work that missed normal Queue delivery.
+- **Queue delivery is at-least-once.** Domain writes and projections must be replay-safe.
+- **Reconciliation is a safety net, not polling architecture.**
 - **Use least-privilege runtime credentials.** Migrations and runtime writes use separate authority boundaries.
-
-## Runtime implementation
-
-`src/cloudflare-worker.ts` provides:
-
-- `GET /health`;
-- authenticated `GET /v1/needs`;
-- authenticated + idempotent `POST /v1/inventory/events`;
-- signed `POST /webhooks/notion` ingestion;
-- Cloudflare Queue consumption;
-- protected `POST /internal/relay`;
-- low-frequency scheduled reconciliation.
-
-`wrangler.jsonc` defines:
-
-- Worker: `llm4life-product-tracker`;
-- Queue: `llm4life-product-tracker-events`;
-- DLQ: `llm4life-product-tracker-events-dlq`;
-- Queue batching/retries;
-- 5-minute reconciliation trigger;
-- Hyperdrive binding;
-- Cloudflare observability.
-
-The legacy Fastify server and standalone worker remain useful for local development/migration fallback. They are not the long-term production runtime.
-
-## Reliability model
-
-```text
-API / webhook
-      |
-      v
- Neon transaction
- event/balance + outbox/receipt
-      |
-      v
- Cloudflare Queue
-      |
-      v
- Notion projection / external effect
-```
-
-If the database commit succeeds but Queue publication fails, the Neon outbox/receipt row remains durable. The scheduled relay republishes only Product Tracker's own pending delivery ledger; it does **not** poll Notion.
 
 ## Core API
 
 - `GET /health`
-- `GET /v1/needs`
-- `POST /v1/inventory/events`
-- `POST /webhooks/notion`
-- `POST /internal/relay`
+- authenticated `GET /v1/needs`
+- authenticated `GET /internal/status`
+- authenticated + idempotent `POST /v1/inventory/events`
+- signed `POST /webhooks/notion`
+- authenticated `POST /internal/relay`
 
-All `/v1/*` routes require `Authorization: Bearer $API_BEARER_TOKEN`. Inventory mutations also require `Idempotency-Key`.
+Inventory mutations require `Authorization: Bearer $API_BEARER_TOKEN` and `Idempotency-Key`.
 
-## Remaining final-cutover tests
+## Runtime implementation
 
-Do not demote Notion to projection/rollback-only until these are deliberately verified:
+`src/cloudflare-worker.ts` provides HTTP ingress, Queue consumption, DLQ persistence, reconciliation and reliability status.
 
-1. duplicate/retried `POST /v1/inventory/events` requests produce exactly one canonical inventory event;
-2. a real intentional inventory mutation produces the expected outbound Notion projection;
-3. retry behavior does not duplicate canonical events or side effects;
-4. reconciliation recovers a deliberately pending durable delivery row;
-5. DLQ/retry behavior is observable.
+`wrangler.jsonc` defines:
 
-After those pass, route all human/agent personal-care inventory mutations through Product Tracker and make Notion optional projection/rollback UI.
+- Worker `llm4life-product-tracker`;
+- Queue `llm4life-product-tracker-events`;
+- DLQ `llm4life-product-tracker-events-dlq`;
+- retry/batching policy;
+- the main Worker as the DLQ consumer;
+- 5-minute reconciliation;
+- Hyperdrive;
+- Cloudflare observability;
+- Notion inbound sync disabled in production.
+
+The legacy Fastify server and standalone worker remain useful for local development/migration fallback. They are not the long-term production runtime.
 
 ## Migration phases
 
 1. **Mirror — complete.**
-2. **Cloudflare implementation — complete.**
-3. **Cloudflare Phase 2 webhook/Queue/Hyperdrive verification — complete.**
-4. **Write-path/idempotency/retry cutover tests — next.**
-5. **Postgres-authoritative human/agent write cutover.**
-6. **Forecasting from consumption history.**
+2. **Cloudflare runtime — complete.**
+3. **Webhook/Queue/Hyperdrive verification — complete.**
+4. **Idempotency/retry/reconciliation/DLQ gates — complete.**
+5. **Neon-authoritative write cutover — complete.**
+6. **Post-cutover observation and observability hardening — active.**
+7. **Consumption-history forecasting — future.**
 
-## Existing production database baseline
+## Database migrations
 
-The production database was initialized from `20260831114000_init` before Prisma migration history existed. The one-time production baseline is now recorded. Future schema changes use:
+The production database was initialized from `20260831114000_init` before Prisma migration history existed. The one-time production baseline is recorded. Future schema changes use:
 
 ```bash
 npm run db:migrate:deploy
