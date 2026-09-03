@@ -75,6 +75,19 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+function errorDetails(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const candidate = error as Error & { code?: unknown; clientVersion?: unknown; meta?: unknown };
+  return {
+    name: candidate.name,
+    message: candidate.message,
+    code: candidate.code,
+    clientVersion: candidate.clientVersion,
+    meta: candidate.meta,
+    stack: candidate.stack,
+  };
+}
+
 function safeEqualToken(actual: string, expected: string): boolean {
   const a = Buffer.from(actual);
   const b = Buffer.from(expected);
@@ -173,7 +186,7 @@ async function handleInventoryEvent(request: Request, env: WorkerEnv): Promise<R
     const queued = await enqueueOutboxForIdempotencyKey(env.INVENTORY_QUEUE, key);
     return json({ event, queued }, 201);
   } catch (error) {
-    console.warn("Inventory command rejected", error);
+    console.warn("Inventory command rejected", errorDetails(error));
     return json({ error: error instanceof Error ? error.message : "inventory_command_failed" }, 409);
   }
 }
@@ -196,7 +209,7 @@ async function handleNotionWebhook(request: Request, env: WorkerEnv, ctx: Worker
   try {
     notionConfig = requireNotionConfig({ requireWebhookSecret: true });
   } catch (error) {
-    console.error("Signed Notion webhook received before webhook secret was configured", error);
+    console.error("Signed Notion webhook received before webhook secret was configured", errorDetails(error));
     return json({ error: "webhook_not_configured" }, 503);
   }
 
@@ -289,7 +302,10 @@ export default {
           message.ack();
         }
       } catch (error) {
-        console.error("Queue message processing crashed", { body: message.body, error });
+        console.error("Queue message processing crashed", {
+          body: message.body,
+          error: errorDetails(error),
+        });
         message.retry({ delaySeconds: 30 });
       }
     }
