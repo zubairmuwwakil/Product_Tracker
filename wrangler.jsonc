@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "llm4life-product-tracker",
-  "main": "src/cloudflare-worker.ts",
+  "main": "src/cloudflare-entry.ts",
   "compatibility_date": "2026-09-03",
   "workers_dev": true,
   "preview_urls": false,
