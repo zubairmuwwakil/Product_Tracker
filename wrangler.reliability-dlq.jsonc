@@ -11,7 +11,7 @@
   "queues": {
     "consumers": [
       {
-        "queue": "llm4life-product-tracker-reliability-dlq-20260903a",
+        "queue": "llm4life-product-tracker-reliability-dlq",
         "max_batch_size": 10,
         "max_batch_timeout": 1,
         "max_retries": 1,
