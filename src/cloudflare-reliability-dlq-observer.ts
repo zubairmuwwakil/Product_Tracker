@@ -1,5 +1,5 @@
 type QueueBatch = {
-  messages: readonly Array<{ body: unknown }>;
+  messages: ReadonlyArray<{ body: unknown }>;
 };
 
 export default {
