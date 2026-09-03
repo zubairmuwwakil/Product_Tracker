@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "llm4life-product-tracker",
+  "main": "src/cloudflare-worker.ts",
+  "compatibility_date": "2026-09-03",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "INVENTORY_QUEUE",
+        "queue": "llm4life-product-tracker-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "llm4life-product-tracker-events",
+        "max_batch_size": 20,
+        "max_batch_timeout": 5,
+        "max_retries": 8,
+        "retry_delay": 30,
+        "dead_letter_queue": "llm4life-product-tracker-events-dlq",
+        "max_concurrency": 2
+      }
+    ]
+  },
+  "vars": {
+    "NODE_ENV": "production",
+    "OUTBOX_BATCH_SIZE": "20",
+    "DATABASE_POOL_MAX": "2",
+    "DATABASE_IDLE_TIMEOUT_MS": "10000",
+    "DATABASE_CONNECTION_TIMEOUT_MS": "5000"
+  }
+}
