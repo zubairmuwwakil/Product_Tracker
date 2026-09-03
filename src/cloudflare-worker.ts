@@ -14,7 +14,7 @@ import {
   type WorkResult,
 } from "./worker-runtime.js";
 
-const WORKER_VERSION = "0.2.0";
+const WORKER_VERSION = "0.3.0";
 const QUEUE_BATCH_LIMIT = 100;
 
 type QueueWorkMessage =
@@ -29,6 +29,7 @@ type QueueBinding = {
 type WorkerEnv = {
   API_BEARER_TOKEN: string;
   INVENTORY_QUEUE: QueueBinding;
+  NOTION_INBOUND_SYNC_ENABLED?: string;
 };
 
 type WorkerContext = {
@@ -98,6 +99,10 @@ function isAuthorized(request: Request, env: WorkerEnv): boolean {
   const authorization = request.headers.get("authorization") ?? "";
   const actual = authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
   return Boolean(actual && env.API_BEARER_TOKEN && safeEqualToken(actual, env.API_BEARER_TOKEN));
+}
+
+function notionInboundSyncEnabled(env: WorkerEnv): boolean {
+  return env.NOTION_INBOUND_SYNC_ENABLED !== "false";
 }
 
 function idempotencyKey(request: Request): string | null {
@@ -229,6 +234,17 @@ async function handleNotionWebhook(request: Request, env: WorkerEnv, ctx: Worker
     return json({ error: "invalid_webhook_payload" }, 400);
   }
 
+  if (!notionInboundSyncEnabled(env)) {
+    const entity = body.entity as Record<string, unknown> | undefined;
+    const entityId = entity?.type === "page" && typeof entity.id === "string" ? entity.id : null;
+    console.log("Notion inbound webhook ignored because Neon is canonical", {
+      externalEventId: body.id,
+      eventType: body.type,
+      entityId,
+    });
+    return json({ ok: true, ignored: true, reason: "notion_inbound_disabled" }, 202);
+  }
+
   const entity = body.entity as Record<string, unknown> | undefined;
   const entityId = entity?.type === "page" && typeof entity.id === "string" ? entity.id : null;
 
@@ -264,7 +280,13 @@ async function handleFetch(request: Request, env: WorkerEnv, ctx: WorkerContext)
 
   if (request.method === "GET" && url.pathname === "/health") {
     await prisma.$queryRawUnsafe("SELECT 1");
-    return json({ ok: true, service: "product-tracker", runtime: "cloudflare-worker", version: WORKER_VERSION });
+    return json({
+      ok: true,
+      service: "product-tracker",
+      runtime: "cloudflare-worker",
+      version: WORKER_VERSION,
+      notionInboundSyncEnabled: notionInboundSyncEnabled(env),
+    });
   }
 
   if (request.method === "GET" && url.pathname === "/v1/needs") {
