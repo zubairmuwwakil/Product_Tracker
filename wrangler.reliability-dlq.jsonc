@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "llm4life-product-tracker-reliability-dlq-observer",
+  "main": "src/cloudflare-reliability-dlq-observer.ts",
+  "compatibility_date": "2026-09-03",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true
+  },
+  "queues": {
+    "consumers": [
+      {
+        "queue": "llm4life-product-tracker-reliability-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 1,
+        "max_concurrency": 1
+      }
+    ]
+  }
+}
