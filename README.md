@@ -1,19 +1,24 @@
 # Product Tracker
 
-Postgres-backed personal inventory service with Notion as a human control surface and an agent-safe API for inventory mutations.
+Postgres-backed personal inventory service with Notion as a transitional human control surface and an agent-safe API for inventory mutations.
 
 ## Architecture
 
 ```text
-Notion (transitional editable UI)
-  -> signed webhook
-Product Tracker API
-  -> PostgreSQL (target source of truth)
-  -> Inventory events + current balance + transactional outbox
-  -> Notion projection worker
-AI / agents
-  -> authenticated inventory commands
-  -> same domain service
+Notion (transitional editable UI) / ChatGPT / clients
+                  |
+                  v
+          Product Tracker API
+                  |
+                  v
+        PostgreSQL / Neon
+   canonical inventory + events
+                  |
+                  v
+       durable async processing
+                  |
+                  v
+ Notion projection / notifications / future clients
 ```
 
 ## Production state
@@ -29,7 +34,7 @@ Verified mirror snapshot:
 - zero orphan product/balance relationships;
 - zero balance-vs-baseline mismatches.
 
-The database mirror is **not yet the final write cutover**. Until the hosted API + webhook/outbox runtime is deployed and verified, Notion remains the live human control/source surface. Do not silently dual-write around the domain service.
+The database mirror is **not yet the final write cutover**. Until the hosted API + durable async runtime is deployed and verified, Notion remains the live human control/source surface. Do not silently dual-write around the domain service.
 
 ## Design rules
 
@@ -38,8 +43,9 @@ The database mirror is **not yet the final write cutover**. Until the hosted API
 - **Notion becomes a projection/control surface.** Human edits are translated into audited adjustment events.
 - **Stable keys beat titles.** `need.personal-care.*` and `product.*` keys are canonical identifiers.
 - **Derived state stays derived.** On-hand, urgency and buy quantity come from inventory facts and policy.
-- **Every write is idempotent.** Agent/API callers provide an `Idempotency-Key`.
-- **External side effects use the outbox.** A committed inventory mutation never depends on Notion being online.
+- **Every external write is idempotent.** Agent/API callers provide an `Idempotency-Key`.
+- **External side effects are durable and retry-safe.** A committed inventory mutation never depends on Notion being online.
+- **Prefer event-driven processing to permanent polling.** Reconciliation may poll when necessary, but the normal write path should react to events/webhooks.
 
 ## Reuse decision
 
@@ -55,6 +61,8 @@ No third-party application source code is copied into this repository.
 
 ## Runtime
 
+Current implementation:
+
 - Node.js 24
 - TypeScript
 - Fastify
@@ -62,7 +70,35 @@ No third-party application source code is copied into this repository.
 - Notion SDK
 - Vitest
 
-The server and queue worker share one domain implementation. They can run as separate processes, or the web process can run the queue loop in-process with `RUN_WORKER_IN_PROCESS=true`.
+The repository currently contains a reusable inbox/outbox worker loop that can run separately or in-process. That refactor is useful during migration, but **the infinite polling loop is not the long-term hosted architecture**.
+
+### Target hosted runtime
+
+The adopted target is:
+
+```text
+Fastify API -> Vercel Functions
+                 |
+                 v
+                Neon
+ canonical inventory/event state
+                 |
+                 v
+ durable Vercel Queue/Workflow consumer
+                 |
+                 v
+ Notion projection / future side effects
+```
+
+Do not choose a hosting provider merely to preserve the existing `while` polling loop. The API/domain service should remain portable, while asynchronous work moves toward durable event-driven consumers.
+
+Vercel is a **runtime**, not the source of truth. Neon remains canonical.
+
+Frequent Vercel Hobby Cron polling is intentionally **not** the target. Normal processing should be triggered by API writes/webhooks and durable async delivery; reconciliation may run separately at an appropriate low frequency if needed.
+
+The governing runtime decision is documented in LLM4LIFE:
+
+- `docs/decisions/2026-09-03-product-tracker-runtime.md`
 
 ## Local setup
 
@@ -75,7 +111,7 @@ npm run bootstrap:notion
 npm run dev
 ```
 
-Run the outbox worker separately when `RUN_WORKER_IN_PROCESS=false`:
+During the transitional implementation, the existing worker can still be run separately:
 
 ```bash
 npm run dev:worker
@@ -97,22 +133,6 @@ npm run db:migrate:deploy
 
 Do not run `db:push` against production.
 
-## Free-first hosted runtime
-
-`render.yaml` defines a single Docker web service with `RUN_WORKER_IN_PROCESS=true`. This keeps the authenticated API, Notion webhook receiver, webhook inbox, and transactional outbox on one free service without creating a second paid background worker.
-
-Required secret values are declared with `sync: false`; never commit them:
-
-- `DATABASE_URL`
-- `DIRECT_URL`
-- `NOTION_TOKEN`
-- all three `NOTION_*_DATA_SOURCE_ID` values
-- `NOTION_WEBHOOK_VERIFICATION_TOKEN`
-
-`API_BEARER_TOKEN` is generated by Render in the Blueprint.
-
-The free web-service runtime may sleep when idle. This is acceptable for the current personal low-volume mirror/cutover stage because incoming API or webhook traffic wakes the service, but it should not be described as an always-on dedicated worker. If operational requirements outgrow this, keep the same domain service/outbox model and move the queue loop to a dedicated worker/runtime rather than redesigning inventory state.
-
 ## Core API
 
 - `GET /health`
@@ -122,22 +142,23 @@ The free web-service runtime may sleep when idle. This is acceptable for the cur
 
 All `/v1/*` routes require `Authorization: Bearer $API_BEARER_TOKEN`. Inventory mutations additionally require `Idempotency-Key`.
 
-`GET /health` reports whether the queue runtime is `in-process` or `external`.
-
 ## Migration phases
 
 1. **Mirror — complete:** the current Notion Shopping Needs + Personal Care Products snapshot is mirrored and parity-verified in Neon.
-2. **Runtime verification — current:** deploy API + webhook/outbox processing and verify reads/reconciliation while Notion remains editable.
-3. **Postgres-authoritative:** all meaningful inventory mutations flow through Product Tracker; Notion becomes projection/rollback UI.
-4. **Forecasting:** consumption history drives estimated depletion and reorder-by dates.
+2. **Runtime refactor — current:** adapt Fastify to Vercel and replace normal permanent polling with durable event/queue/workflow processing while preserving the transactional domain model.
+3. **Runtime verification:** deploy API + async processing and verify reads, webhook ingestion, retries, projection, and reconciliation while Notion remains editable.
+4. **Postgres-authoritative:** all meaningful inventory mutations flow through Product Tracker; Notion becomes projection/rollback UI.
+5. **Forecasting:** consumption history drives estimated depletion and reorder-by dates.
 
 ### Cutover gate
 
 Do not demote Notion until all of these are verified against the hosted service:
 
-1. `/health` succeeds and reports the expected worker mode;
+1. `/health` succeeds;
 2. authenticated `GET /v1/needs` matches the Neon mirror;
-3. a Notion webhook reaches the inbox and is processed;
-4. the outbox successfully projects a domain-service change back to Notion;
-5. retries are idempotent and do not duplicate inventory events;
-6. only then switch human/agent writes to Product Tracker and make Notion a projection/rollback surface.
+3. an API mutation records exactly one durable inventory event under retries;
+4. a Notion webhook is authenticated, deduplicated, and processed;
+5. durable async projection successfully updates the external projection;
+6. retries do not duplicate inventory events or side effects;
+7. reconciliation can identify and recover drift/missed events;
+8. only then switch human/agent writes to Product Tracker and make Notion a projection/rollback surface.
