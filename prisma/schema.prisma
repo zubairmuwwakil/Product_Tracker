@@ -148,3 +148,19 @@ model WebhookReceipt {
   @@unique([provider, externalEventId])
   @@index([provider, processedAt, availableAt])
 }
+
+model DeadLetterEvent {
+  id         String   @id @default(cuid())
+  messageId  String   @unique
+  queueName  String
+  attempts   Int
+  sentAt     DateTime
+  receivedAt DateTime @default(now())
+  bodyType   String
+  workKind   String?
+  workId     String?
+  resolvedAt DateTime?
+  note       String?
+
+  @@index([resolvedAt, receivedAt])
+}
