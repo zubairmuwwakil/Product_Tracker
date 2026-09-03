@@ -1,11 +1,8 @@
 import { OutboxStatus, OutboxType } from "@prisma/client";
 import { config } from "./config.js";
 import { prisma } from "./db.js";
-import {
-  processNotionWebhookReceipt,
-  projectInventoryEvent,
-  projectProductState,
-} from "./integrations/notion.js";
+import { projectInventoryEvent } from "./integrations/notion-event-projection.js";
+import { processNotionWebhookReceipt, projectProductState } from "./integrations/notion.js";
 
 const STALE_LOCK_MS = 5 * 60 * 1000;
 const MAX_ATTEMPTS = 8;
