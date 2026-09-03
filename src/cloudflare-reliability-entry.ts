@@ -12,7 +12,7 @@ type ReliabilityEnv = {
 };
 
 type ReliabilityQueueBatch = {
-  messages: readonly Array<{ body: unknown }>;
+  messages: ReadonlyArray<{ body: unknown }>;
 };
 
 function authorized(request: Request, env: ReliabilityEnv): boolean {
