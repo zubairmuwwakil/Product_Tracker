@@ -14,8 +14,10 @@ import {
   type WorkResult,
 } from "./worker-runtime.js";
 
-const WORKER_VERSION = "0.3.0";
+const WORKER_VERSION = "0.4.0";
 const QUEUE_BATCH_LIMIT = 100;
+const PRODUCTION_DLQ = "llm4life-product-tracker-events-dlq";
+const ATTENTION_STALE_MS = 10 * 60_000;
 
 type QueueWorkMessage =
   | { kind: "outbox"; id: string }
@@ -37,12 +39,16 @@ type WorkerContext = {
 };
 
 type QueueMessage = {
-  body: QueueWorkMessage;
+  id: string;
+  timestamp: Date;
+  attempts: number;
+  body: unknown;
   ack(): void;
   retry(options?: { delaySeconds?: number }): void;
 };
 
 type QueueBatch = {
+  queue: string;
   messages: readonly QueueMessage[];
 };
 
@@ -108,6 +114,78 @@ function notionInboundSyncEnabled(env: WorkerEnv): boolean {
 function idempotencyKey(request: Request): string | null {
   const value = request.headers.get("idempotency-key")?.trim();
   return value && value.length <= 200 ? value : null;
+}
+
+function asQueueWorkMessage(body: unknown): QueueWorkMessage | null {
+  if (!body || typeof body !== "object") return null;
+  const candidate = body as { kind?: unknown; id?: unknown };
+  if (typeof candidate.id !== "string") return null;
+  if (candidate.kind === "outbox" || candidate.kind === "notion_webhook") {
+    return { kind: candidate.kind, id: candidate.id };
+  }
+  return null;
+}
+
+function queueBodyType(body: unknown): string {
+  if (body === null) return "null";
+  if (Array.isArray(body)) return "array";
+  return typeof body;
+}
+
+async function recordDeadLetter(queueName: string, message: QueueMessage): Promise<void> {
+  const work = asQueueWorkMessage(message.body);
+  const bodyType = queueBodyType(message.body);
+  await prisma.deadLetterEvent.upsert({
+    where: { messageId: message.id },
+    create: {
+      messageId: message.id,
+      queueName,
+      attempts: message.attempts,
+      sentAt: message.timestamp,
+      bodyType,
+      workKind: work?.kind ?? null,
+      workId: work?.id ?? null,
+    },
+    update: {
+      queueName,
+      attempts: message.attempts,
+      receivedAt: new Date(),
+      bodyType,
+      workKind: work?.kind ?? null,
+      workId: work?.id ?? null,
+    },
+  });
+
+  console.error("Product Tracker dead-letter persisted", {
+    messageId: message.id,
+    queueName,
+    attempts: message.attempts,
+    bodyType,
+    workKind: work?.kind ?? null,
+    workId: work?.id ?? null,
+  });
+}
+
+async function reliabilityStatus() {
+  const staleBefore = new Date(Date.now() - ATTENTION_STALE_MS);
+  const [failedOutbox, overdueOutbox, overdueWebhooks, unresolvedDeadLetters] = await Promise.all([
+    prisma.outboxEvent.count({ where: { status: "FAILED" } }),
+    prisma.outboxEvent.count({
+      where: { status: "PENDING", availableAt: { lt: staleBefore } },
+    }),
+    prisma.webhookReceipt.count({
+      where: { processedAt: null, availableAt: { lt: staleBefore } },
+    }),
+    prisma.deadLetterEvent.count({ where: { resolvedAt: null } }),
+  ]);
+
+  return {
+    failedOutbox,
+    overdueOutbox,
+    overdueWebhooks,
+    unresolvedDeadLetters,
+    attentionRequired: failedOutbox + overdueOutbox + overdueWebhooks + unresolvedDeadLetters > 0,
+  };
 }
 
 async function sendQueueMessages(queue: QueueBinding, messages: QueueWorkMessage[]): Promise<void> {
@@ -294,6 +372,11 @@ async function handleFetch(request: Request, env: WorkerEnv, ctx: WorkerContext)
     return json({ needs: await listNeedHealth() });
   }
 
+  if (request.method === "GET" && url.pathname === "/internal/status") {
+    if (!isAuthorized(request, env)) return json({ error: "unauthorized" }, 401);
+    return json({ ok: true, ...(await reliabilityStatus()) });
+  }
+
   if (request.method === "POST" && url.pathname === "/v1/inventory/events") {
     return handleInventoryEvent(request, env);
   }
@@ -314,18 +397,46 @@ export default {
   fetch: handleFetch,
 
   async queue(batch: QueueBatch): Promise<void> {
-    for (const message of batch.messages) {
-      try {
-        if (message.body.kind === "outbox") {
-          queueRetry(message, await processOutboxById(message.body.id));
-        } else if (message.body.kind === "notion_webhook") {
-          queueRetry(message, await processWebhookReceiptById(message.body.id));
-        } else {
+    if (batch.queue === PRODUCTION_DLQ) {
+      for (const message of batch.messages) {
+        try {
+          await recordDeadLetter(batch.queue, message);
           message.ack();
+        } catch (error) {
+          console.error("Failed to persist Product Tracker dead-letter", {
+            messageId: message.id,
+            queueName: batch.queue,
+            error: errorDetails(error),
+          });
+          message.retry({ delaySeconds: 60 });
+        }
+      }
+      return;
+    }
+
+    for (const message of batch.messages) {
+      const work = asQueueWorkMessage(message.body);
+      if (!work) {
+        console.warn("Unknown Product Tracker queue message acknowledged", {
+          messageId: message.id,
+          queueName: batch.queue,
+          bodyType: queueBodyType(message.body),
+        });
+        message.ack();
+        continue;
+      }
+
+      try {
+        if (work.kind === "outbox") {
+          queueRetry(message, await processOutboxById(work.id));
+        } else {
+          queueRetry(message, await processWebhookReceiptById(work.id));
         }
       } catch (error) {
         console.error("Queue message processing crashed", {
-          body: message.body,
+          messageId: message.id,
+          queueName: batch.queue,
+          body: work,
           error: errorDetails(error),
         });
         message.retry({ delaySeconds: 30 });
@@ -335,6 +446,11 @@ export default {
 
   async scheduled(_controller: unknown, env: WorkerEnv): Promise<void> {
     const relayed = await relayPendingWork(env);
-    console.log("Inventory reconciliation relay complete", relayed);
+    const status = await reliabilityStatus();
+    if (status.attentionRequired) {
+      console.error("Product Tracker reliability attention required", { relayed, ...status });
+    } else {
+      console.log("Inventory reconciliation relay complete", { relayed, ...status });
+    }
   },
 };
