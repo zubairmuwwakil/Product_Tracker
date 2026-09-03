@@ -5,21 +5,26 @@ Postgres-backed personal inventory service with Notion as a transitional human c
 ## Architecture
 
 ```text
-Notion (transitional editable UI) / ChatGPT / clients
+Notion (transitional UI) / ChatGPT / clients
                   |
                   v
-          Product Tracker API
+          Cloudflare Worker
+      HTTP API / webhook ingress
                   |
                   v
-        PostgreSQL / Neon
-   canonical inventory + events
+             Neon/Postgres
+      canonical inventory + events
+      outbox + webhook receipts
                   |
                   v
-       durable async processing
+          Cloudflare Queue
+       async projection / retries
                   |
                   v
- Notion projection / notifications / future clients
+ Notion projection / future side effects
 ```
+
+Neon owns durable inventory truth. Cloudflare owns runtime execution, queue delivery and retry infrastructure.
 
 ## Production state
 
@@ -34,7 +39,7 @@ Verified mirror snapshot:
 - zero orphan product/balance relationships;
 - zero balance-vs-baseline mismatches.
 
-The database mirror is **not yet the final write cutover**. Until the hosted API + durable async runtime is deployed and verified, Notion remains the live human control/source surface. Do not silently dual-write around the domain service.
+The database mirror is **not yet the final write cutover**. Until the Cloudflare API + Queue runtime is deployed and verified, Notion remains the live human control/source surface. Do not silently dual-write around the domain service.
 
 ## Design rules
 
@@ -45,7 +50,7 @@ The database mirror is **not yet the final write cutover**. Until the hosted API
 - **Derived state stays derived.** On-hand, urgency and buy quantity come from inventory facts and policy.
 - **Every external write is idempotent.** Agent/API callers provide an `Idempotency-Key`.
 - **External side effects are durable and retry-safe.** A committed inventory mutation never depends on Notion being online.
-- **Prefer event-driven processing to permanent polling.** Reconciliation may poll when necessary, but the normal write path should react to events/webhooks.
+- **Prefer event-driven processing to permanent polling.** Reconciliation exists only to recover durable pending work that missed normal queue delivery.
 
 ## Reuse decision
 
@@ -61,46 +66,62 @@ No third-party application source code is copied into this repository.
 
 ## Runtime
 
-Current implementation:
+Shared domain/runtime stack:
 
-- Node.js 24
+- Node.js 24 / Cloudflare Workers Node compatibility
 - TypeScript
-- Fastify
 - Prisma 7 + PostgreSQL
 - Notion SDK
 - Vitest
 
-The repository currently contains a reusable inbox/outbox worker loop that can run separately or in-process. That refactor is useful during migration, but **the infinite polling loop is not the long-term hosted architecture**.
+The existing Fastify server and standalone worker remain useful for local development and migration fallback. They are **not** the long-term production runtime.
 
-### Target hosted runtime
+### Cloudflare production target
 
-The adopted target is:
+`src/cloudflare-worker.ts` implements:
+
+- `GET /health`;
+- authenticated `GET /v1/needs`;
+- authenticated/idempotent `POST /v1/inventory/events`;
+- signed `POST /webhooks/notion` ingestion;
+- Cloudflare Queue consumption;
+- a protected manual reconciliation endpoint;
+- a low-frequency scheduled reconciliation relay.
+
+`wrangler.jsonc` defines:
+
+- Worker: `llm4life-product-tracker`;
+- Queue: `llm4life-product-tracker-events`;
+- DLQ: `llm4life-product-tracker-events-dlq`;
+- Queue batching/retries;
+- a 5-minute reconciliation trigger;
+- Cloudflare observability.
+
+### Reliability model
+
+Normal path:
 
 ```text
-Fastify API -> Vercel Functions
-                 |
-                 v
-                Neon
- canonical inventory/event state
-                 |
-                 v
- durable Vercel Queue/Workflow consumer
-                 |
-                 v
- Notion projection / future side effects
+API/webhook
+   |
+   v
+Neon transaction
+ event/balance + outbox/receipt
+   |
+   v
+Cloudflare Queue
+   |
+   v
+Notion projection / external side effect
 ```
 
-Do not choose a hosting provider merely to preserve the existing `while` polling loop. The API/domain service should remain portable, while asynchronous work moves toward durable event-driven consumers.
+If the database commit succeeds but queue publication fails, the durable Neon outbox/receipt row remains pending. The scheduled Cloudflare relay republishes due pending rows. This is why the database outbox remains useful even after adopting Queue.
 
-Vercel is a **runtime**, not the source of truth. Neon remains canonical.
+The scheduled handler does **not** poll Notion. It only reconciles Product Tracker's own durable delivery ledger.
 
-Frequent Vercel Hobby Cron polling is intentionally **not** the target. Normal processing should be triggered by API writes/webhooks and durable async delivery; reconciliation may run separately at an appropriate low frequency if needed.
+The governing runtime decision is recorded in [`docs/decisions/2026-09-03-product-tracker-runtime.md`](docs/decisions/2026-09-03-product-tracker-runtime.md).
 
-The governing runtime decision is documented in LLM4LIFE:
-
-- `docs/decisions/2026-09-03-product-tracker-runtime.md`
-
-## Local setup
+## Local Node setup
 
 ```bash
 cp .env.example .env
@@ -111,11 +132,31 @@ npm run bootstrap:notion
 npm run dev
 ```
 
-During the transitional implementation, the existing worker can still be run separately:
+The transitional standalone worker can still be run with:
 
 ```bash
 npm run dev:worker
 ```
+
+## Cloudflare development
+
+Copy the placeholder file and fill secrets locally:
+
+```bash
+cp .dev.vars.example .dev.vars
+npm install
+npm run cloudflare:dev
+```
+
+Never commit `.dev.vars`.
+
+Bundle validation:
+
+```bash
+npm run cloudflare:dry
+```
+
+The same Wrangler dry run is enforced in CI.
 
 ## Existing production database baseline
 
@@ -125,7 +166,7 @@ The production `product_tracker` database was initialized from the committed `20
 npm run db:baseline
 ```
 
-Run this with `DIRECT_URL` (preferred) or `DATABASE_URL` pointed at the production `product_tracker` database. After the baseline is recorded, future schema changes use the normal flow:
+Run this with `DIRECT_URL` (preferred) or `DATABASE_URL` pointed at the production `product_tracker` database. After the baseline is recorded, future schema changes use:
 
 ```bash
 npm run db:migrate:deploy
@@ -133,32 +174,63 @@ npm run db:migrate:deploy
 
 Do not run `db:push` against production.
 
+## Cloudflare deployment prerequisites
+
+Create the primary Queue once:
+
+```bash
+npm run cloudflare:queue:create
+```
+
+The consumer configuration references `llm4life-product-tracker-events-dlq` as the dead-letter queue.
+
+Set these Worker secrets interactively with Wrangler; never paste them into source control:
+
+- `DATABASE_URL`
+- `API_BEARER_TOKEN`
+- `NOTION_TOKEN`
+- `NOTION_SHOPPING_NEEDS_DATA_SOURCE_ID`
+- `NOTION_PRODUCTS_DATA_SOURCE_ID`
+- `NOTION_INVENTORY_EVENTS_DATA_SOURCE_ID`
+- `NOTION_WEBHOOK_VERIFICATION_TOKEN`
+
+Then deploy with:
+
+```bash
+npm run cloudflare:deploy
+```
+
+The first production deployment uses the existing pooled Neon PostgreSQL URL directly. Hyperdrive is a later connection/pooling optimization after functional runtime verification; it is not required for the first cutover.
+
 ## Core API
 
 - `GET /health`
 - `GET /v1/needs` — inventory health / shopping state
 - `POST /v1/inventory/events` — purchase, open, finish, return, discard or adjust inventory
 - `POST /webhooks/notion` — signed Notion change notifications
+- `POST /internal/relay` — protected manual delivery-ledger reconciliation
 
 All `/v1/*` routes require `Authorization: Bearer $API_BEARER_TOKEN`. Inventory mutations additionally require `Idempotency-Key`.
 
 ## Migration phases
 
-1. **Mirror — complete:** the current Notion Shopping Needs + Personal Care Products snapshot is mirrored and parity-verified in Neon.
-2. **Runtime refactor — current:** adapt Fastify to Vercel and replace normal permanent polling with durable event/queue/workflow processing while preserving the transactional domain model.
-3. **Runtime verification:** deploy API + async processing and verify reads, webhook ingestion, retries, projection, and reconciliation while Notion remains editable.
+1. **Mirror — complete:** current Notion Shopping Needs + Personal Care Products are mirrored and parity-verified in Neon.
+2. **Cloudflare runtime implementation — current:** Worker + Queue + reconciliation path committed and CI-validated before deployment.
+3. **Runtime verification:** deploy and verify reads, webhook ingestion, queue retries, projection and reconciliation while Notion remains editable.
 4. **Postgres-authoritative:** all meaningful inventory mutations flow through Product Tracker; Notion becomes projection/rollback UI.
-5. **Forecasting:** consumption history drives estimated depletion and reorder-by dates.
+5. **Connection hardening:** evaluate Hyperdrive once the runtime path is proven.
+6. **Forecasting:** consumption history drives estimated depletion and reorder-by dates.
 
 ### Cutover gate
 
-Do not demote Notion until all of these are verified against the hosted service:
+Do not demote Notion until all of these are verified against the Cloudflare service:
 
 1. `/health` succeeds;
 2. authenticated `GET /v1/needs` matches the Neon mirror;
-3. an API mutation records exactly one durable inventory event under retries;
-4. a Notion webhook is authenticated, deduplicated, and processed;
-5. durable async projection successfully updates the external projection;
+3. an API mutation records exactly one durable inventory event under duplicate/retried requests;
+4. a Notion webhook is authenticated, deduplicated and queued;
+5. Queue processing successfully performs outbound Notion projection;
 6. retries do not duplicate inventory events or side effects;
-7. reconciliation can identify and recover drift/missed events;
-8. only then switch human/agent writes to Product Tracker and make Notion a projection/rollback surface.
+7. reconciliation recovers a deliberately pending delivery row;
+8. the DLQ/retry path is observable;
+9. only then switch human/agent writes to Product Tracker and make Notion a projection/rollback surface.
