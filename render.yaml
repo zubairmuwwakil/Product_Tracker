@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: product-tracker
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 30
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUN_WORKER_IN_PROCESS
+        value: "true"
+      - key: API_BEARER_TOKEN
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: NOTION_TOKEN
+        sync: false
+      - key: NOTION_SHOPPING_NEEDS_DATA_SOURCE_ID
+        sync: false
+      - key: NOTION_PRODUCTS_DATA_SOURCE_ID
+        sync: false
+      - key: NOTION_INVENTORY_EVENTS_DATA_SOURCE_ID
+        sync: false
+      - key: NOTION_WEBHOOK_VERIFICATION_TOKEN
+        sync: false
+      - key: OUTBOX_POLL_MS
+        value: "1000"
+      - key: OUTBOX_BATCH_SIZE
+        value: "20"
+      - key: DATABASE_POOL_MAX
+        value: "3"
+      - key: DATABASE_IDLE_TIMEOUT_MS
+        value: "10000"
+      - key: DATABASE_CONNECTION_TIMEOUT_MS
+        value: "5000"
