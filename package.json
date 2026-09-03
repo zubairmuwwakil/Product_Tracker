@@ -1,6 +1,6 @@
 {
   "name": "product-tracker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,6 +15,11 @@
     "db:baseline": "prisma migrate resolve --applied 20260831114000_init",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
+    "cloudflare:dev": "wrangler dev",
+    "cloudflare:dry": "wrangler deploy --dry-run",
+    "cloudflare:deploy": "wrangler deploy",
+    "cloudflare:tail": "wrangler tail",
+    "cloudflare:queue:create": "wrangler queues create llm4life-product-tracker-events",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test",
@@ -36,7 +41,8 @@
     "prisma": "^7.10.0",
     "tsx": "^4.20.6",
     "typescript": "~5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "wrangler": "^4.128.0"
   },
   "overrides": {
     "deepmerge-ts": "^8.0.1"
