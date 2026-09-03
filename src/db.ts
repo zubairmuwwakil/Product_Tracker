@@ -27,6 +27,10 @@ export const prisma =
   globalForDb.prisma ??
   new PrismaClient({
     adapter,
+    transactionOptions: {
+      maxWait: 10_000,
+      timeout: 10_000,
+    },
   });
 
 if (config.NODE_ENV !== "production") {
