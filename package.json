@@ -12,11 +12,11 @@
     "bootstrap:notion": "tsx scripts/bootstrap-notion.ts",
     "db:migrate:dev": "prisma migrate dev --name init",
     "db:migrate:deploy": "prisma migrate deploy",
+    "db:baseline": "prisma migrate resolve --applied 20260831114000_init",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
     "check": "npm run typecheck && npm run test",
     "postinstall": "prisma generate"
   },
