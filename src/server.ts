@@ -7,6 +7,7 @@ import { config, requireApiBearerToken } from "./config.js";
 import { closeDb, prisma } from "./db.js";
 import { registerNotionWebhookRoute } from "./routes/notion-webhook.js";
 import { listNeedHealth, recordInventoryEvent } from "./services/inventory-service.js";
+import { requestWorkerStop, runWorkerLoop } from "./worker-runtime.js";
 
 const CommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("PURCHASED"), quantity: z.number().int().positive() }),
@@ -58,7 +59,7 @@ export async function buildServer() {
 
   app.get("/health", async () => {
     await prisma.$queryRawUnsafe("SELECT 1");
-    return { ok: true };
+    return { ok: true, workerMode: config.RUN_WORKER_IN_PROCESS ? "in-process" : "external" };
   });
 
   app.get("/v1/needs", async () => ({ needs: await listNeedHealth() }));
@@ -96,10 +97,24 @@ export async function buildServer() {
 }
 
 const app = await buildServer();
+const workerLoop = config.RUN_WORKER_IN_PROCESS
+  ? runWorkerLoop().catch((error) => {
+      app.log.error(error, "In-process inventory worker stopped unexpectedly");
+      throw error;
+    })
+  : null;
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
+  requestWorkerStop();
   await app.close();
+  if (workerLoop) {
+    try {
+      await workerLoop;
+    } catch (error) {
+      app.log.error(error, "Inventory worker failed during shutdown");
+    }
+  }
   await closeDb();
   process.exit(0);
 };
