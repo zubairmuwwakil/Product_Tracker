@@ -13,17 +13,17 @@
     "producers": [
       {
         "binding": "INVENTORY_QUEUE",
-        "queue": "llm4life-product-tracker-reliability"
+        "queue": "llm4life-product-tracker-reliability-20260903a"
       }
     ],
     "consumers": [
       {
-        "queue": "llm4life-product-tracker-reliability",
+        "queue": "llm4life-product-tracker-reliability-20260903a",
         "max_batch_size": 1,
         "max_batch_timeout": 1,
         "max_retries": 8,
         "retry_delay": 1,
-        "dead_letter_queue": "llm4life-product-tracker-reliability-dlq",
+        "dead_letter_queue": "llm4life-product-tracker-reliability-dlq-20260903a",
         "max_concurrency": 1
       }
     ]
