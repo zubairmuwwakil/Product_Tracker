@@ -37,3 +37,4 @@ jobs:
       - run: npx prisma migrate status
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run check
+      - run: npm run cloudflare:dry
