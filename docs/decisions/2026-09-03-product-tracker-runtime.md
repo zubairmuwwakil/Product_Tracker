@@ -1,93 +1,94 @@
 # 2026-09-03 — Product Tracker Runtime: Cloudflare Workers + Queues + Neon
 
-**Status:** Adopted target architecture. The Neon mirror is live; Cloudflare runtime implementation is in progress and write cutover is not yet complete.
+**Status:** Adopted and production cutover complete. Product Tracker/Neon is canonical; Notion is projection/rollback UI.
 
 The cross-system governing decision is also recorded in `zubairmuwwakil/LLM4LIFE`.
 
 ## Decision
 
-Use this as the target runtime:
+Use this production runtime:
 
 ```text
-ChatGPT / clients / Notion webhook
-              |
-              v
-      Cloudflare Worker
-   HTTP ingress / auth / API
-              |
-              v
-             Neon
+ChatGPT / clients
+       |
+       v
+Cloudflare Worker
+ HTTP ingress / auth / API
+       |
+       v
+   Hyperdrive
+       |
+       v
+      Neon
  canonical inventory/event state
- transactional outbox + receipts
-              |
-              v
-      Cloudflare Queue
- async projection / retries
-              |
-              v
- Notion projection / future effects
+ outbox + webhook receipts
+ dead-letter receipts
+       |
+       v
+Cloudflare Queue
+ projection / retries / reconciliation
+       |
+       v
+Notion projection
 ```
 
-A low-frequency Cloudflare scheduled handler may relay durable Neon outbox/webhook rows that were committed but were not successfully published to Queue. It is a reconciliation safety net, not the normal processing path and does not poll Notion.
+Neon is the canonical database. Cloudflare is compute, ingress, queueing, retry and workflow infrastructure; it does not own inventory truth. Notion is not an authoritative production write source.
 
-Neon remains the canonical database. Cloudflare is compute, ingress, queueing, retry and workflow infrastructure; it does not own inventory truth.
+Production sets `NOTION_INBOUND_SYNC_ENABLED=false`. Signed Notion webhooks remain authenticated and acknowledged, but are ignored for state mutation while this switch is disabled. This keeps rollback reversible without creating dual ownership.
 
 ## Why
 
-Product Tracker originally used a conventional Node/Fastify API plus a continuously running PostgreSQL polling worker. Choosing a traditional always-on host merely to preserve that loop would optimize for an implementation detail instead of the desired architecture.
+Product Tracker originally used a conventional Node/Fastify API plus a continuously running PostgreSQL polling worker. Preserving that loop on an always-on host would have optimized for an implementation detail instead of the desired architecture.
 
-Cloudflare now provides the required primitives in one platform:
-
-- Workers for HTTP/API execution;
-- Queues for durable asynchronous delivery, batching and retries;
-- scheduled handlers for reconciliation;
-- Workflows if future multi-step durable processes justify them;
-- PostgreSQL connectivity to Neon, with Hyperdrive available as a future connection optimization.
-
-This also consolidates LLM4LIFE infrastructure because Cloudflare is already production-live for the Google Tasks projection.
+Cloudflare provides the needed primitives in one platform: Workers for HTTP execution, Queues for durable asynchronous delivery/retries, scheduled handlers for reconciliation, and Hyperdrive for Neon connectivity. This also reduces infrastructure-platform sprawl across LLM4LIFE.
 
 ## Reliability model
 
 The database transaction remains the durable boundary:
 
 1. commit inventory event/balance changes and outbox rows atomically in Neon;
-2. publish the resulting outbox work to Cloudflare Queue;
+2. publish resulting work to Cloudflare Queue;
 3. queue consumers perform external side effects;
-4. processed state is persisted back to Neon;
-5. the reconciliation trigger republishes any due durable rows that were never successfully queued or became stale.
+4. processed/failed state is persisted in Neon;
+5. the scheduled relay republishes due durable rows that missed normal Queue delivery;
+6. application failures back off and become terminal `FAILED` at attempt 8;
+7. queue-handler/platform failures use Cloudflare retries and then the DLQ;
+8. production consumes the DLQ and persists each dead-letter message in `DeadLetterEvent` by Cloudflare message ID.
 
-This avoids pretending a PostgreSQL transaction and a remote queue publish can be one atomic operation.
+This avoids pretending a PostgreSQL transaction and a remote queue publish can be one atomic operation while keeping failure evidence durable.
+
+## Verified cutover gates
+
+- Hosted `/health` and authenticated `/v1/needs` verified.
+- Duplicate/retried API mutations produce one canonical InventoryEvent.
+- Signed Notion webhook authentication/deduplication verified before inbound demotion.
+- Outbound Neon → Notion projection verified.
+- Durable application retry/backoff and terminal attempt-8 failure verified in isolated staging.
+- Reconciliation recovery of deliberately pending durable work verified.
+- Cloudflare platform retry and DLQ routing verified with a deliberate staging queue-handler crash.
+- Prisma/pg Worker lifecycle was changed to invocation-scoped database clients after a cross-invocation I/O failure was discovered in staging.
+- Production `v0.3.0` cutover health reported `notionInboundSyncEnabled=false`, with zero pending webhook/outbox work.
 
 ## Rules
 
-- Inventory mutations remain durable domain events.
-- External writes remain idempotent.
-- Webhook receipts remain deduplicated.
-- Queue delivery is at-least-once; canonical inventory writes must therefore be safe to retry.
-- Preserve the Neon outbox/receipt ledger even though Queue handles normal asynchronous delivery.
-- Do not recreate the old continuous polling loop inside Workers.
-- Reconciliation may inspect only durable pending delivery state at a low frequency.
-- Keep business/domain logic separate from Cloudflare-specific ingress/delivery code where practical.
-- Notion remains the live control surface until end-to-end runtime verification is complete.
-- Hyperdrive is an optimization after functional runtime validation, not a prerequisite for first deployment.
+- Inventory mutations are durable domain events.
+- External writes are idempotent/replay-safe.
+- Queue delivery is at-least-once.
+- Preserve the Neon outbox, webhook receipt and dead-letter ledgers.
+- Do not recreate a continuous polling loop inside Workers.
+- Reconciliation is a low-frequency safety net only.
+- Keep business/domain logic separate from Cloudflare-specific delivery code where practical.
+- Runtime database clients must be invocation-scoped in Cloudflare Workers.
+- Product Tracker/Neon owns personal-care inventory state.
+- Notion is projection/reference/rollback UI only unless inbound sync is explicitly re-enabled for recovery.
+- Human/agent inventory mutations must route through Product Tracker's authenticated API.
 
-## Migration sequence
+## Remaining hardening
 
-1. Keep the verified Neon mirror unchanged.
-2. Add a Cloudflare Worker HTTP entrypoint for health, authenticated reads/writes and Notion webhooks.
-3. Refactor worker processing into exact-by-ID handlers reusable by Queue consumers and the legacy Node loop.
-4. Bind a Cloudflare Queue and dead-letter queue.
-5. Publish normal webhook/outbox work immediately after durable database commit.
-6. Add a low-frequency reconciliation trigger for missed queue publishes/stale claims.
-7. Validate TypeScript, Prisma migrations, tests, security audit and Wrangler dry-run in CI.
-8. Provision the Queue and Worker secrets in Cloudflare.
-9. Deploy the Worker.
-10. Verify `/health` and authenticated `/v1/needs` against the Neon mirror.
-11. Verify exactly-once domain behavior under duplicate/retried inventory requests.
-12. Verify Notion webhook signature validation/deduplication and Queue processing.
-13. Verify outbound Notion projection and retry behavior.
-14. Only then make Product Tracker/Neon authoritative and demote Notion to projection/rollback.
+One narrow external exactly-once race remains for Notion event-page creation: if the remote page create succeeds but the DB update that stores `notionEventPageId` fails, a retry could create a duplicate page. The planned fix is a stable Product Tracker Event ID property in Notion, projected from the Neon InventoryEvent ID and queried before create.
+
+After a clean post-cutover observation window, temporary reliability Worker/Queue resources and the temporary Neon reliability branch can be removed.
 
 ## Superseded directions
 
-The earlier Render single-service design and the subsequent Vercel Functions/Queue target are superseded. Cloudflare is now the preferred Product Tracker runtime because it provides the needed event-driven primitives while reducing infrastructure-platform sprawl across LLM4LIFE.
+The earlier Render single-service design and subsequent Vercel Functions/Queue target are superseded. Cloudflare Workers + Queues + Hyperdrive + Neon is the adopted production architecture.
