@@ -34,6 +34,14 @@
         "retry_delay": 30,
         "dead_letter_queue": "llm4life-product-tracker-events-dlq",
         "max_concurrency": 2
+      },
+      {
+        "queue": "llm4life-product-tracker-events-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "retry_delay": 30,
+        "max_concurrency": 1
       }
     ]
   },
