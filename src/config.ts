@@ -10,6 +10,7 @@ const EnvSchema = z.object({
   NOTION_PRODUCTS_DATA_SOURCE_ID: z.string().min(1).optional(),
   NOTION_INVENTORY_EVENTS_DATA_SOURCE_ID: z.string().min(1).optional(),
   NOTION_WEBHOOK_VERIFICATION_TOKEN: z.string().min(1).optional(),
+  RUN_WORKER_IN_PROCESS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   OUTBOX_POLL_MS: z.coerce.number().int().positive().default(1000),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().max(100).default(20),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(5),
