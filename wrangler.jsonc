@@ -3,6 +3,7 @@
   "name": "llm4life-product-tracker",
   "main": "src/cloudflare-entry.ts",
   "compatibility_date": "2026-09-03",
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
   "observability": {
@@ -11,6 +12,12 @@
   "triggers": {
     "crons": ["*/5 * * * *"]
   },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "8c447a04e64c4c619f9edcc335ba5c5c"
+    }
+  ],
   "queues": {
     "producers": [
       {
