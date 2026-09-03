@@ -11,6 +11,10 @@ type ReliabilityEnv = {
   HYPERDRIVE?: { connectionString: string };
 };
 
+type ReliabilityQueueBatch = {
+  messages: readonly Array<{ body: unknown }>;
+};
+
 function authorized(request: Request, env: ReliabilityEnv): boolean {
   return request.headers.get("authorization") === `Bearer ${env.API_BEARER_TOKEN}`;
 }
@@ -35,7 +39,12 @@ export default {
     return productionWorker.fetch(request, env as any, ctx as any);
   },
 
-  async queue(batch: unknown, env: ReliabilityEnv): Promise<void> {
+  async queue(batch: ReliabilityQueueBatch, env: ReliabilityEnv): Promise<void> {
+    if (batch.messages.some((message) => message.body === null)) {
+      console.error("Reliability test injected queue-handler crash");
+      throw new Error("Reliability test injected queue-handler crash");
+    }
+
     await productionWorker.queue(batch as any, env as any);
   },
 };
