@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "llm4life-product-tracker-reliability",
+  "main": "src/cloudflare-reliability-entry.ts",
+  "compatibility_date": "2026-09-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "INVENTORY_QUEUE",
+        "queue": "llm4life-product-tracker-reliability"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "llm4life-product-tracker-reliability",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 2,
+        "retry_delay": 1,
+        "dead_letter_queue": "llm4life-product-tracker-reliability-dlq",
+        "max_concurrency": 1
+      }
+    ]
+  },
+  "vars": {
+    "NODE_ENV": "production",
+    "OUTBOX_BATCH_SIZE": "20",
+    "DATABASE_POOL_MAX": "2",
+    "DATABASE_IDLE_TIMEOUT_MS": "10000",
+    "DATABASE_CONNECTION_TIMEOUT_MS": "5000"
+  }
+}
