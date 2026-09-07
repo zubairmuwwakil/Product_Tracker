@@ -129,22 +129,6 @@ ALTER TABLE "SupplementIngredient"
 ADD CONSTRAINT "SupplementIngredient_amount_nonnegative_chk" CHECK ("amountPerServing" IS NULL OR "amountPerServing" >= 0),
 ADD CONSTRAINT "SupplementIngredient_unit_chk" CHECK ("amountPerServing" IS NULL OR unit IS NOT NULL);
 
--- InventoryEvent is append-only audit history. The Notion projection identifier is the only mutable field.
-CREATE FUNCTION "protect_inventory_event_history"()
-RETURNS trigger
-LANGUAGE plpgsql
-AS 'BEGIN
-  IF TG_OP = ''DELETE'' THEN
-    RAISE EXCEPTION ''InventoryEvent is append-only and cannot be deleted'';
-  END IF;
-
-  IF (to_jsonb(NEW) - ''notionEventPageId'') IS DISTINCT FROM (to_jsonb(OLD) - ''notionEventPageId'') THEN
-    RAISE EXCEPTION ''InventoryEvent audit fields are immutable'';
-  END IF;
-
-  RETURN NEW;
-END;';
-
-CREATE TRIGGER "InventoryEvent_append_only_trg"
-BEFORE UPDATE OR DELETE ON "InventoryEvent"
-FOR EACH ROW EXECUTE FUNCTION "protect_inventory_event_history"();
+-- The production runtime may append events and attach a Notion projection id, but cannot rewrite/delete audit history.
+REVOKE DELETE, UPDATE ON "InventoryEvent" FROM product_tracker_runtime;
+GRANT UPDATE ("notionEventPageId") ON "InventoryEvent" TO product_tracker_runtime;
