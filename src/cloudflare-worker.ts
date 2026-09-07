@@ -4,7 +4,12 @@ import { InventoryEventSource, Prisma } from "@prisma/client";
 import { z } from "zod";
 import { requireNotionConfig } from "./config.js";
 import { prisma } from "./db.js";
-import { listNeedHealth, recordInventoryEvent } from "./services/inventory-service.js";
+import {
+  IdempotencyConflictError,
+  listNeedHealth,
+  listSupplementStack,
+  recordInventoryEvent,
+} from "./services/inventory-service.js";
 import {
   listDueOutboxIds,
   listDueWebhookReceiptIds,
@@ -14,7 +19,7 @@ import {
   type WorkResult,
 } from "./worker-runtime.js";
 
-const WORKER_VERSION = "0.4.0";
+const WORKER_VERSION = "0.5.0";
 const QUEUE_BATCH_LIMIT = 100;
 const PRODUCTION_DLQ = "llm4life-product-tracker-events-dlq";
 const ATTENTION_STALE_MS = 10 * 60_000;
@@ -270,6 +275,9 @@ async function handleInventoryEvent(request: Request, env: WorkerEnv): Promise<R
     return json({ event, queued }, 201);
   } catch (error) {
     console.warn("Inventory command rejected", errorDetails(error));
+    if (error instanceof IdempotencyConflictError) {
+      return json({ error: "idempotency_key_conflict" }, 409);
+    }
     return json({ error: error instanceof Error ? error.message : "inventory_command_failed" }, 409);
   }
 }
@@ -370,6 +378,11 @@ async function handleFetch(request: Request, env: WorkerEnv, ctx: WorkerContext)
   if (request.method === "GET" && url.pathname === "/v1/needs") {
     if (!isAuthorized(request, env)) return json({ error: "unauthorized" }, 401);
     return json({ needs: await listNeedHealth() });
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/supplements") {
+    if (!isAuthorized(request, env)) return json({ error: "unauthorized" }, 401);
+    return json({ supplements: await listSupplementStack() });
   }
 
   if (request.method === "GET" && url.pathname === "/internal/status") {

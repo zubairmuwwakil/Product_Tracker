@@ -6,7 +6,12 @@ import { z } from "zod";
 import { config, requireApiBearerToken } from "./config.js";
 import { closeDb, prisma } from "./db.js";
 import { registerNotionWebhookRoute } from "./routes/notion-webhook.js";
-import { listNeedHealth, recordInventoryEvent } from "./services/inventory-service.js";
+import {
+  IdempotencyConflictError,
+  listNeedHealth,
+  listSupplementStack,
+  recordInventoryEvent,
+} from "./services/inventory-service.js";
 import { requestWorkerStop, runWorkerLoop } from "./worker-runtime.js";
 
 const CommandSchema = z.discriminatedUnion("type", [
@@ -63,6 +68,7 @@ export async function buildServer() {
   });
 
   app.get("/v1/needs", async () => ({ needs: await listNeedHealth() }));
+  app.get("/v1/supplements", async () => ({ supplements: await listSupplementStack() }));
 
   app.post("/v1/inventory/events", async (request, reply) => {
     const parsed = EventRequestSchema.safeParse(request.body);
@@ -88,6 +94,9 @@ export async function buildServer() {
       return reply.code(201).send({ event });
     } catch (error) {
       request.log.warn(error, "Inventory command rejected");
+      if (error instanceof IdempotencyConflictError) {
+        return reply.code(409).send({ error: "idempotency_key_conflict" });
+      }
       return reply.code(409).send({ error: error instanceof Error ? error.message : "inventory_command_failed" });
     }
   });

@@ -11,7 +11,6 @@ jobs:
     env:
       DATABASE_URL: postgresql://product_tracker:product_tracker@localhost:5432/product_tracker?schema=public
       DIRECT_URL: postgresql://product_tracker:product_tracker@localhost:5432/product_tracker?schema=public
-      API_BEARER_TOKEN: ci-only-token-that-is-long-enough
     services:
       postgres:
         image: postgres:17-alpine
@@ -32,6 +31,7 @@ jobs:
         with:
           node-version: 24
       - run: npm install
+      - run: npm run db:prepare-role
       - run: npx prisma validate
       - run: npx prisma migrate deploy
       - run: npx prisma migrate status
