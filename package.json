@@ -10,6 +10,7 @@
     "start": "node dist/src/server.js",
     "start:worker": "node dist/src/worker.js",
     "bootstrap:notion": "tsx scripts/bootstrap-notion.ts",
+    "bootstrap:supplements": "tsx scripts/bootstrap-supplements.ts",
     "db:migrate:dev": "prisma migrate dev --name init",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:baseline": "prisma migrate resolve --applied 20260831114000_init",
