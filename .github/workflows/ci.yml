@@ -32,20 +32,7 @@ jobs:
         with:
           node-version: 24
       - run: npm install
-      - name: Ensure production runtime role exists in CI Postgres
-        run: |
-          node --input-type=module <<'NODE'
-          import pg from "pg";
-          const client = new pg.Client({
-            connectionString: "postgresql://product_tracker:product_tracker@localhost:5432/product_tracker",
-          });
-          await client.connect();
-          const existing = await client.query("SELECT 1 FROM pg_roles WHERE rolname = $1", ["product_tracker_runtime"]);
-          if (existing.rowCount === 0) {
-            await client.query("CREATE ROLE product_tracker_runtime NOLOGIN");
-          }
-          await client.end();
-          NODE
+      - run: npm run db:prepare-role
       - run: npx prisma validate
       - run: npx prisma migrate deploy
       - run: npx prisma migrate status
