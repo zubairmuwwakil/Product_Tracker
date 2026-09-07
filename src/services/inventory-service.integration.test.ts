@@ -87,10 +87,35 @@ integration("inventory service with Postgres", () => {
     expect(balance.backupUnits).toBe(1);
   });
 
-  it("keeps inventory history append-only and prevents parent deletion", async () => {
-    await expect(prisma.inventoryEvent.delete({ where: { id: eventId } })).rejects.toThrow();
+  it("protects event history from parent deletion and runtime rewrites", async () => {
     await expect(prisma.product.delete({ where: { id: productId } })).rejects.toThrow();
     await expect(prisma.inventoryNeed.delete({ where: { id: needId } })).rejects.toThrow();
+
+    const event = await prisma.inventoryEvent.findUniqueOrThrow({ where: { id: eventId } });
+    expect(event.productId).toBe(productId);
+
+    const tableGrants = await prisma.$queryRaw<Array<{ privilege_type: string }>>`
+      SELECT privilege_type
+      FROM information_schema.role_table_grants
+      WHERE grantee = 'product_tracker_runtime'
+        AND table_schema = 'public'
+        AND table_name = 'InventoryEvent'
+    `;
+    const privileges = new Set(tableGrants.map((row) => row.privilege_type));
+    expect(privileges.has("SELECT")).toBe(true);
+    expect(privileges.has("INSERT")).toBe(true);
+    expect(privileges.has("DELETE")).toBe(false);
+    expect(privileges.has("UPDATE")).toBe(false);
+
+    const columnGrants = await prisma.$queryRaw<Array<{ column_name: string; privilege_type: string }>>`
+      SELECT column_name, privilege_type
+      FROM information_schema.role_column_grants
+      WHERE grantee = 'product_tracker_runtime'
+        AND table_schema = 'public'
+        AND table_name = 'InventoryEvent'
+        AND privilege_type = 'UPDATE'
+    `;
+    expect(columnGrants).toEqual([{ column_name: "notionEventPageId", privilege_type: "UPDATE" }]);
   });
 
   it("projects regimen facts separately from supplement label facts", async () => {
