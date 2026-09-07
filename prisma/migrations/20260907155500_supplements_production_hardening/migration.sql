@@ -133,19 +133,17 @@ ADD CONSTRAINT "SupplementIngredient_unit_chk" CHECK ("amountPerServing" IS NULL
 CREATE FUNCTION "protect_inventory_event_history"()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'InventoryEvent is append-only and cannot be deleted';
+AS 'BEGIN
+  IF TG_OP = ''DELETE'' THEN
+    RAISE EXCEPTION ''InventoryEvent is append-only and cannot be deleted'';
   END IF;
 
-  IF (to_jsonb(NEW) - 'notionEventPageId') IS DISTINCT FROM (to_jsonb(OLD) - 'notionEventPageId') THEN
-    RAISE EXCEPTION 'InventoryEvent audit fields are immutable';
+  IF (to_jsonb(NEW) - ''notionEventPageId'') IS DISTINCT FROM (to_jsonb(OLD) - ''notionEventPageId'') THEN
+    RAISE EXCEPTION ''InventoryEvent audit fields are immutable'';
   END IF;
 
   RETURN NEW;
-END;
-$$;
+END;';
 
 CREATE TRIGGER "InventoryEvent_append_only_trg"
 BEFORE UPDATE OR DELETE ON "InventoryEvent"
