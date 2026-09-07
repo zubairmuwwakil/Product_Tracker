@@ -35,50 +35,66 @@ enum OutboxStatus {
   FAILED
 }
 
+enum ProductType {
+  PERSONAL_CARE
+  SUPPLEMENT
+  OTHER
+}
+
+enum SupplementPriority {
+  CORE
+  OPTIONAL
+  SITUATIONAL
+}
+
 model InventoryNeed {
-  id                 String           @id @default(cuid())
-  key                String           @unique
+  id                 String            @id @default(cuid())
+  key                String            @unique
   name               String
   aisle              String?
-  active             Boolean          @default(true)
-  backupTarget       Int              @default(1)
-  reorderPoint       Int              @default(1)
+  active             Boolean           @default(true)
+  backupTarget       Int               @default(1)
+  reorderPoint       Int               @default(1)
   defaultRetailer    String?
   notes              String?
-  notionPageId       String?          @unique
+  notionPageId       String?           @unique
   notionLastEditedAt DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
   products           Product[]
   events             InventoryEvent[]
+  supplementPlan     SupplementPlan?
 
   @@index([active])
 }
 
 model Product {
-  id                  String            @id @default(cuid())
-  key                 String            @unique
+  id                  String             @id @default(cuid())
+  key                 String             @unique
   needId              String
   name                String
   brand               String?
+  productType         ProductType        @default(PERSONAL_CARE)
   careArea            String?
-  active              Boolean           @default(true)
+  active              Boolean            @default(true)
   paoMonths           Int?
-  price               Decimal?          @db.Decimal(12, 2)
+  price               Decimal?           @db.Decimal(12, 2)
   productUrl          String?
   repurchasePolicy    String?
   retailerOverride    String?
   notes               String?
-  needsIdentification Boolean           @default(false)
-  notionPageId        String?           @unique
+  needsIdentification Boolean            @default(false)
+  notionPageId        String?            @unique
   notionLastEditedAt  DateTime?
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  need                InventoryNeed     @relation(fields: [needId], references: [id], onDelete: Cascade)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  need                InventoryNeed      @relation(fields: [needId], references: [id], onDelete: Restrict)
   balance             InventoryBalance?
   events              InventoryEvent[]
+  supplementProfile   SupplementProfile?
 
   @@index([needId, active])
+  @@index([productType, active])
 }
 
 model InventoryBalance {
@@ -103,14 +119,62 @@ model InventoryEvent {
   occurredAt        DateTime
   recordedAt        DateTime             @default(now())
   idempotencyKey    String               @unique
+  requestHash       String?
   externalEventId   String?
   note              String?
   notionEventPageId String?              @unique
-  product           Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
-  need              InventoryNeed        @relation(fields: [needId], references: [id], onDelete: Cascade)
+  product           Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
+  need              InventoryNeed        @relation(fields: [needId], references: [id], onDelete: Restrict)
 
   @@index([productId, occurredAt])
   @@index([needId, occurredAt])
+}
+
+model SupplementPlan {
+  needId          String             @id
+  priority        SupplementPriority
+  targetMinAmount Decimal?           @db.Decimal(12, 4)
+  targetMaxAmount Decimal?           @db.Decimal(12, 4)
+  targetUnit      String?
+  frequency       String?
+  instructions    String?
+  rationale       String?
+  active          Boolean            @default(true)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  need            InventoryNeed      @relation(fields: [needId], references: [id], onDelete: Cascade)
+
+  @@index([priority, active])
+}
+
+model SupplementProfile {
+  productId            String                 @id
+  form                 String?
+  servingSize          Decimal?               @db.Decimal(12, 4)
+  servingUnit          String?
+  servingsPerContainer Decimal?               @db.Decimal(12, 2)
+  notes                String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  product              Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
+  ingredients          SupplementIngredient[]
+}
+
+model SupplementIngredient {
+  id               String            @id @default(cuid())
+  productId        String
+  key              String
+  name             String
+  amountPerServing Decimal?          @db.Decimal(12, 4)
+  unit             String?
+  form             String?
+  notes            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  profile          SupplementProfile @relation(fields: [productId], references: [productId], onDelete: Cascade)
+
+  @@unique([productId, key])
+  @@index([key])
 }
 
 model OutboxEvent {
