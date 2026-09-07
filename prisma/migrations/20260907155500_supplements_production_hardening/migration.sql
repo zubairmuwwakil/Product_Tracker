@@ -129,6 +129,19 @@ ALTER TABLE "SupplementIngredient"
 ADD CONSTRAINT "SupplementIngredient_amount_nonnegative_chk" CHECK ("amountPerServing" IS NULL OR "amountPerServing" >= 0),
 ADD CONSTRAINT "SupplementIngredient_unit_chk" CHECK ("amountPerServing" IS NULL OR unit IS NOT NULL);
 
--- The production runtime may append events and attach a Notion projection id, but cannot rewrite/delete audit history.
+-- Make runtime privileges explicit so CI/staging/production do not depend on database-specific default ACLs.
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+  "InventoryNeed",
+  "Product",
+  "InventoryBalance",
+  "SupplementPlan",
+  "SupplementProfile",
+  "SupplementIngredient",
+  "OutboxEvent",
+  "WebhookReceipt",
+  "DeadLetterEvent"
+TO product_tracker_runtime;
+
+GRANT SELECT, INSERT ON "InventoryEvent" TO product_tracker_runtime;
 REVOKE DELETE, UPDATE ON "InventoryEvent" FROM product_tracker_runtime;
 GRANT UPDATE ("notionEventPageId") ON "InventoryEvent" TO product_tracker_runtime;
